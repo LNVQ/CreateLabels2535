@@ -150,7 +150,7 @@ async function generatePDF() {
         
         // === ИЗМЕНЕНИЕ ЗДЕСЬ: Сдвинули влево и увеличили ===
         // X=12 (было 14), Y=2 (было 2.5), Ширина=21 (было 20), Высота=21 (было 20)
-        pdf.addImage(dmImg, 'PNG', 12, 2, 21, 21);
+        pdf.addImage(dmImg, 'PNG', 12, 2, 19, 19);
       }
 
       function drawVerticalText(text, startX, yStart, maxHeight, initialFontSize, isBold = false, allowShrink = false) {
