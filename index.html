@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Генератор этикеток 35×25 мм (PDF)</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    padding: 24px; max-width: 900px; margin: 0 auto; background: #f7f8fa; color: #1f2933;
+  }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  h1 + p { color: #52606d; margin-top: 0; font-size: 14px; }
+  
+  #drop {
+    border: 2px dashed #9aa5b1; border-radius: 10px; padding: 36px 20px;
+    text-align: center; background: #fff; cursor: pointer; transition: .15s;
+  }
+  #drop.hover { background: #eef4ff; border-color: #3b82f6; }
+  #drop .hint { color: #7b8794; font-size: 13px; margin-top: 6px; }
+  #drop input { display: none; }
+  
+  #controls { display: flex; gap: 12px; margin-top: 18px; flex-wrap: wrap; }
+  button {
+    padding: 10px 18px; font-size: 15px; border-radius: 8px; border: none;
+    background: #2563eb; color: #fff; cursor: pointer; transition: .15s;
+  }
+  button:hover:not(:disabled) { background: #1d4ed8; }
+  button:disabled { background: #b0b8c4; cursor: not-allowed; }
+  
+  #status { margin-top: 16px; padding: 10px 14px; border-radius: 8px; font-size: 14px; display: none; }
+  #status.info { display: block; background: #e0f2fe; color: #075985; }
+  #status.ok { display: block; background: #dcfce7; color: #166534; }
+  #status.error { display: block; background: #fee2e2; color: #991b1b; }
+  
+  #progressWrap { margin-top: 12px; height: 8px; background: #e4e7eb; border-radius: 4px; overflow: hidden; display: none; }
+  #progressBar { height: 100%; width: 0; background: #2563eb; transition: width .1s; }
+</style>
+</head>
+<body>
+
+<h1>Генератор этикеток на основе полного кода. Размер 35×25 мм. Выгрузка в PDF</h1>
+
+<div id="drop">
+  <div>Перетащите <b>.xlsx</b> сюда или <u>выберите файл</u></div>
+  <div class="hint">Обязательно указать колонки с полным кодом маркировки и Артикулом</div>
+  <input type="file" id="file" accept=".xlsx,.xls">
+</div>
+
+<div id="controls">
+  <button id="genBtn" disabled>Скачать этикетки (PDF)</button>
+</div>
+
+<div id="status"></div>
+<div id="progressWrap"><div id="progressBar"></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bwip-js@4.1.1/dist/bwip-js-min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+
+<script>
+const GS = '\u001D'; 
+let rows = [];
+
+const dropZone = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const genBtn = document.getElementById('genBtn');
+const statusEl = document.getElementById('status');
+const progressWrap = document.getElementById('progressWrap');
+const progressBar = document.getElementById('progressBar');
+
+function setStatus(msg, type = 'info') {
+  statusEl.className = type; statusEl.style.display = 'block'; statusEl.textContent = msg;
+}
+function setProgress(pct) {
+  if (pct == null) { progressWrap.style.display = 'none'; return; }
+  progressWrap.style.display = 'block'; progressBar.style.width = pct + '%';
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+dropZone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { if (e.target.files[0]) readFile(e.target.files[0]); });
+['dragover','dragenter'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add('hover'); }));
+['dragleave','drop'].forEach(ev => dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove('hover'); }));
+dropZone.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) readFile(f); });
+
+function readFile(file) {
+  setStatus('Чтение файла…', 'info');
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const wb = XLSX.read(ev.target.result, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+      let start = 0;
+      for (let i = 0; i < Math.min(data.length, 10); i++) {
+        const row = data[i].map(c => String(c).toLowerCase());
+        if (row.some(c => c.includes('код')) && row.some(c => c.includes('артикул'))) { start = i + 1; break; }
+      }
+
+      rows = data.slice(start)
+        .map(r => ({ code: String(r[0] || '').trim(), article: String(r[1] || '').trim() }))
+        .filter(r => r.code.length > 10);
+
+      if (!rows.length) { setStatus('Нет строк с кодами.', 'error'); genBtn.disabled = true; return; }
+      
+      setStatus(`Загружено кодов: ${rows.length}`, 'ok');
+      genBtn.disabled = false;
+    } catch (err) { console.error(err); setStatus('Ошибка чтения: ' + err.message, 'error'); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function normalizeCode(raw) { return raw.replace(/_x001D_/g, GS); }
+
+genBtn.addEventListener('click', generatePDF);
+
+async function generatePDF() {
+  if (!rows.length) return;
+  genBtn.disabled = true; setStatus('Генерация PDF…', 'info'); setProgress(0);
+
+  try {
+    const { jsPDF } = window.jspdf;
+    
+    // Размер: ширина 35 мм, высота 25 мм (Альбомная)
+    const pdf = new jsPDF({
+      orientation: 'landscape',
+      unit: 'mm',
+      format: [35, 25]
+    });
+
+    for (let i = 0; i < rows.length; i++) {
+      if (i > 0) pdf.addPage([35, 25], 'landscape');
+
+      const r = rows[i];
+      const fullCode = normalizeCode(r.code);
+      
+      // 1. Генерируем DataMatrix (справа)
+      const dmCanvas = document.createElement('canvas');
+      const ok = bwipjs.toCanvas(dmCanvas, {
+        bcid: 'datamatrix',
+        text: fullCode,
+        scale: 4,
+        includetext: false,
+        parsefnc: true
+      });
+
+      if (ok) {
+        const dmImg = dmCanvas.toDataURL('image/png');
+        // DataMatrix 20x20 мм. Сдвинут чуть правее (x = 14), чтобы дать больше места тексту
+        pdf.addImage(dmImg, 'PNG', 14, 2.5, 20, 20);
+      }
+
+      // Функция для вертикального текста с возможностью адаптивного шрифта
+      function drawVerticalText(text, startX, yStart, maxHeight, initialFontSize, isBold = false, allowShrink = false) {
+        let fontSize = initialFontSize;
+        let finalLines = [];
+        let fits = false;
+
+        // Подбираем размер шрифта, пока текст не влезет (если allowShrink = true)
+        while (!fits && fontSize > 3) {
+          pdf.setFontSize(fontSize);
+          pdf.setFont('helvetica', isBold ? 'bold' : 'normal');
+          
+          const chars = text.split('');
+          let lines = [];
+          let currentLine = '';
+          
+          for (const char of chars) {
+            const testLine = currentLine + char;
+            const textWidth = (pdf.getStringUnitWidth(testLine) * fontSize) * 0.352777;
+            
+            if (textWidth > maxHeight && currentLine !== '') {
+              lines.push(currentLine);
+              currentLine = char;
+            } else {
+              currentLine = testLine;
+            }
+          }
+          if (currentLine) lines.push(currentLine);
+          
+          // Проверяем, помещается ли количество строк в отведенное место (макс 3 колонки)
+          // Ограничиваем 3 строками, чтобы не налезть на DM
+          if (lines.length <= 3) {
+            fits = true;
+            finalLines = lines;
+          } else if (!allowShrink) {
+            // Если сжатие запрещено, просто обрезаем текст до 3 колонок
+            fits = true;
+            finalLines = lines.slice(0, 3);
+            // Добавляем троеточие в последнюю строку, если обрезали
+            if (lines.length > 3) {
+              finalLines[2] = finalLines[2].slice(0, -3) + '...';
+            }
+          } else {
+            // Уменьшаем шрифт
+            fontSize -= 0.5;
+          }
+        }
+
+        // Если всё равно не влезло (дошли до 3pt), обрезаем
+        if (!fits) {
+          pdf.setFontSize(fontSize);
+          pdf.setFont('helvetica', isBold ? 'bold' : 'normal');
+          finalLines = finalLines.slice(0, 3);
+        }
+
+        let currentX = startX;
+        const lineSpacing = fontSize * 0.352777 * 1.1; // Плотнее строки
+        
+        for (let l = 0; l < finalLines.length; l++) {
+          pdf.text(finalLines[l], currentX, yStart, { angle: 90 });
+          currentX += lineSpacing;
+        }
+        
+        // Возвращаем итоговую ширину + отступ
+        return currentX - startX + 0.5; 
+      }
+
+      // 2. Код маркировки (39 символов). Шрифт 6pt. Если не влезет в 21мм (макс высота), перенесется.
+      // allowShrink = false (не уменьшаем, просто переносим)
+      const code39 = r.code.substring(0, 39);
+      const codeWidth = drawVerticalText(code39, 2, 23, 21, 6, false, false);
+
+      // 3. Артикул. Начинаем после кода.
+      const articleX = 2 + codeWidth + 1; // +1 мм зазор
+      // allowShrink = true (автоматически уменьшит шрифт с 7pt до минимально возможного, чтобы влезло)
+      drawVerticalText(r.article || '—', articleX, 23, 21, 7, true, true);
+
+      // (Опционально) Тонкая рамка этикетки
+      pdf.setDrawColor(220);
+      pdf.rect(0.5, 0.5, 34, 24);
+      
+      if (i % 10 === 0 || i === rows.length - 1) {
+        setProgress(((i + 1) / rows.length) * 100);
+        statusEl.textContent = `Генерация… ${i + 1} / ${rows.length}`;
+        await sleep(0);
+      }
+    }
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+    pdf.save(`etiketki_35x25_${dateStr}.pdf`);
+
+    setStatus(`Готово! Этикеток: ${rows.length}. Размер: 35×25 мм.`, 'ok');
+    setProgress(null);
+  } catch (err) {
+    console.error(err);
+    setStatus('Ошибка: ' + err.message, 'error');
+    setProgress(null);
+  } finally {
+    genBtn.disabled = false;
+  }
+}
+</script>
+</body>
+</html>
