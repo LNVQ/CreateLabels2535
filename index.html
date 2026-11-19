@@ -39,11 +39,11 @@
 </head>
 <body>
 
-<h1>Генератор этикеток на основе полного кода. Размер 35×25 мм. Выгрузка в PDF</h1>
+<h1>Генератор этикеток на основе полного кода, Размер 35×25 мм, Формат .PDF</h1>
 
 <div id="drop">
   <div>Перетащите <b>.xlsx</b> сюда или <u>выберите файл</u></div>
-  <div class="hint">Обязательно указать колонки с полным кодом маркировки и Артикулом</div>
+  <div class="hint">В файле excel должны быть колонки: Код маркировки и Артикул</div>
   <input type="file" id="file" accept=".xlsx,.xls">
 </div>
 
@@ -123,7 +123,6 @@ async function generatePDF() {
   try {
     const { jsPDF } = window.jspdf;
     
-    // Размер: ширина 35 мм, высота 25 мм (Альбомная)
     const pdf = new jsPDF({
       orientation: 'landscape',
       unit: 'mm',
@@ -136,29 +135,29 @@ async function generatePDF() {
       const r = rows[i];
       const fullCode = normalizeCode(r.code);
       
-      // 1. Генерируем DataMatrix (справа)
+      // 1. Генерируем DataMatrix
       const dmCanvas = document.createElement('canvas');
       const ok = bwipjs.toCanvas(dmCanvas, {
         bcid: 'datamatrix',
         text: fullCode,
-        scale: 4,
+        scale: 4, // Увеличили разрешение для четкости
         includetext: false,
         parsefnc: true
       });
 
       if (ok) {
         const dmImg = dmCanvas.toDataURL('image/png');
-        // DataMatrix 20x20 мм. Сдвинут чуть правее (x = 14), чтобы дать больше места тексту
-        pdf.addImage(dmImg, 'PNG', 14, 2.5, 20, 20);
+        
+        // === ИЗМЕНЕНИЕ ЗДЕСЬ: Сдвинули влево и увеличили ===
+        // X=12 (было 14), Y=2 (было 2.5), Ширина=21 (было 20), Высота=21 (было 20)
+        pdf.addImage(dmImg, 'PNG', 12, 2, 21, 21);
       }
 
-      // Функция для вертикального текста с возможностью адаптивного шрифта
       function drawVerticalText(text, startX, yStart, maxHeight, initialFontSize, isBold = false, allowShrink = false) {
         let fontSize = initialFontSize;
         let finalLines = [];
         let fits = false;
 
-        // Подбираем размер шрифта, пока текст не влезет (если allowShrink = true)
         while (!fits && fontSize > 3) {
           pdf.setFontSize(fontSize);
           pdf.setFont('helvetica', isBold ? 'bold' : 'normal');
@@ -171,7 +170,8 @@ async function generatePDF() {
             const testLine = currentLine + char;
             const textWidth = (pdf.getStringUnitWidth(testLine) * fontSize) * 0.352777;
             
-            if (textWidth > maxHeight && currentLine !== '') {
+            // Ограничиваем высоту в 20 мм (было 21), чтобы текст не вылезал за поля
+            if (textWidth > 20 && currentLine !== '') {
               lines.push(currentLine);
               currentLine = char;
             } else {
@@ -180,26 +180,20 @@ async function generatePDF() {
           }
           if (currentLine) lines.push(currentLine);
           
-          // Проверяем, помещается ли количество строк в отведенное место (макс 3 колонки)
-          // Ограничиваем 3 строками, чтобы не налезть на DM
           if (lines.length <= 3) {
             fits = true;
             finalLines = lines;
           } else if (!allowShrink) {
-            // Если сжатие запрещено, просто обрезаем текст до 3 колонок
             fits = true;
             finalLines = lines.slice(0, 3);
-            // Добавляем троеточие в последнюю строку, если обрезали
             if (lines.length > 3) {
               finalLines[2] = finalLines[2].slice(0, -3) + '...';
             }
           } else {
-            // Уменьшаем шрифт
             fontSize -= 0.5;
           }
         }
 
-        // Если всё равно не влезло (дошли до 3pt), обрезаем
         if (!fits) {
           pdf.setFontSize(fontSize);
           pdf.setFont('helvetica', isBold ? 'bold' : 'normal');
@@ -207,28 +201,24 @@ async function generatePDF() {
         }
 
         let currentX = startX;
-        const lineSpacing = fontSize * 0.352777 * 1.1; // Плотнее строки
+        const lineSpacing = fontSize * 0.352777 * 1.1;
         
         for (let l = 0; l < finalLines.length; l++) {
           pdf.text(finalLines[l], currentX, yStart, { angle: 90 });
           currentX += lineSpacing;
         }
         
-        // Возвращаем итоговую ширину + отступ
         return currentX - startX + 0.5; 
       }
 
-      // 2. Код маркировки (39 символов). Шрифт 6pt. Если не влезет в 21мм (макс высота), перенесется.
-      // allowShrink = false (не уменьшаем, просто переносим)
+      // 2. Код маркировки. Начинаем с x=2.
       const code39 = r.code.substring(0, 39);
-      const codeWidth = drawVerticalText(code39, 2, 23, 21, 6, false, false);
+      const codeWidth = drawVerticalText(code39, 2, 23, 20, 6, false, false);
 
-      // 3. Артикул. Начинаем после кода.
-      const articleX = 2 + codeWidth + 1; // +1 мм зазор
-      // allowShrink = true (автоматически уменьшит шрифт с 7pt до минимально возможного, чтобы влезло)
-      drawVerticalText(r.article || '—', articleX, 23, 21, 7, true, true);
+      // 3. Артикул. 
+      const articleX = 2 + codeWidth + 1; 
+      drawVerticalText(r.article || '—', articleX, 23, 20, 4, false, true);
 
-      // (Опционально) Тонкая рамка этикетки
       pdf.setDrawColor(220);
       pdf.rect(0.5, 0.5, 34, 24);
       
@@ -242,7 +232,7 @@ async function generatePDF() {
     const dateStr = new Date().toISOString().slice(0, 10);
     pdf.save(`etiketki_35x25_${dateStr}.pdf`);
 
-    setStatus(`Готово! Этикеток: ${rows.length}. Размер: 35×25 мм.`, 'ok');
+    setStatus(`Готово! Этикеток: ${rows.length}.`, 'ok');
     setProgress(null);
   } catch (err) {
     console.error(err);
